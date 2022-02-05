@@ -40,9 +40,11 @@ def parallel_feature_extraction(args):
     # input have the method '.device' which allows us to access the
     # current device in the extractor.
     video_paths = form_list_from_user_input(args)
+    print(video_paths)
     indices = torch.arange(len(video_paths))
     replicas = torch.nn.parallel.replicate(extractor, args.device_ids[:len(indices)])
     inputs = torch.nn.parallel.scatter(indices, args.device_ids[:len(indices)])
+    print(len(inputs), len(replicas), args.device_ids[:len(indices)])
     torch.nn.parallel.parallel_apply(replicas[:len(inputs)], inputs)
     # closing the tqdm progress bar to avoid some unexpected errors due to multi-threading
     extractor.progress.close()

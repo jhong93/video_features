@@ -21,7 +21,7 @@ PWC_MODEL_PATH = './models/pwc/checkpoints/pwc_net_sintel.pt'
 RAFT_MODEL_PATH = './models/raft/checkpoints/raft-sintel.pth'
 I3D_RGB_PATH = './models/i3d/checkpoints/i3d_rgb.pt'
 I3D_FLOW_PATH = './models/i3d/checkpoints/i3d_flow.pt'
-PRE_CENTRAL_CROP_MIN_SIDE_SIZE = 256
+PRE_CENTRAL_CROP_MIN_SIDE_SIZE = 224
 CENTRAL_CROP_MIN_SIDE_SIZE = 224
 DEFAULT_I3D_STEP_SIZE = 64
 DEFAULT_I3D_STACK_SIZE = 64
@@ -55,6 +55,15 @@ class ExtractI3D(torch.nn.Module):
             PILToTensor(),
             ToFloat(),
         ])
+
+        # if not args.no_crop:
+        self.resize_transforms = transforms.Compose([
+            transforms.ToPILImage(),
+            ResizeImproved(self.min_side_size),
+            PILToTensor(),
+            ToFloat(),
+        ])
+
         self.i3d_transforms = {
             'rgb': transforms.Compose([
                 TensorCenterCrop(self.central_crop_size),
@@ -69,6 +78,27 @@ class ExtractI3D(torch.nn.Module):
                 PermuteAndUnsqueeze()
             ])
         }
+        # else:
+        #     self.resize_transforms = transforms.Compose([
+        #         transforms.ToPILImage(),
+        #         ResizeImproved(self.central_crop_size),
+        #         PILToTensor(),
+        #         ToFloat(),
+        #     ])
+
+        #     self.i3d_transforms = {
+        #         'rgb': transforms.Compose([
+        #             ScaleTo1_1(),
+        #             PermuteAndUnsqueeze()
+        #         ]),
+        #         'flow': transforms.Compose([
+        #             Clamp(-20, 20),
+        #             ToUInt8(),
+        #             ScaleTo1_1(),
+        #             PermuteAndUnsqueeze()
+        #         ])
+        #     }
+
         self.show_pred = args.show_pred
         self.i3d_classes_num = I3D_CLASSES_NUM
         self.keep_tmp_files = args.keep_tmp_files
@@ -87,6 +117,17 @@ class ExtractI3D(torch.nn.Module):
 
         for idx in indices:
             # when error occurs might fail silently when run from torch data parallel
+            name = self.path_list[idx].split('/')[-1].rsplit('.', 1)[0]
+            done = False
+            for x in os.listdir(self.output_path):
+                if name in x:
+                    done = True
+                    print('Skipping:', name)
+                    break
+            if done:
+                self.progress.update()
+                continue
+
             try:
                 feats_dict = self.extract(device, flow_xtr_model, models, self.path_list[idx])
                 action_on_extraction(feats_dict, self.path_list[idx], self.output_path, self.on_extraction)
@@ -144,6 +185,7 @@ class ExtractI3D(torch.nn.Module):
                     stream_slice = self.i3d_transforms[stream](stream_slice)
                     # extract features for a stream
                     feats = models[stream](stream_slice, features=True)  # (B, 1024)
+                    #print(feats.shape)
                     # add features to the output dict
                     feats_dict[stream].extend(feats.tolist())
                     # show predictions on a daataset
@@ -158,6 +200,7 @@ class ExtractI3D(torch.nn.Module):
 
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
+        num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         # timestamp when the last frame in the stack begins (when the old frame of the last pair ends)
         timestamps_ms = []
         stack = []
@@ -169,6 +212,8 @@ class ExtractI3D(torch.nn.Module):
         first_frame = True
         padder = None
         stack_counter = 0
+
+        frame_pbar = tqdm(total=num_frames)
         while cap.isOpened():
             frame_exists, rgb = cap.read()
 
@@ -201,6 +246,8 @@ class ExtractI3D(torch.nn.Module):
                 # we don't run inference if the stack is not full (applicable for i3d)
                 cap.release()
                 break
+
+            frame_pbar.update(1)
 
         # removes the video with different fps if it was created to preserve disk space
         if (self.extraction_fps is not None) and (not self.keep_tmp_files):
