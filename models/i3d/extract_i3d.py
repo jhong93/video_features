@@ -198,7 +198,10 @@ class ExtractI3D(torch.nn.Module):
         if self.extraction_fps is not None:
             video_path = reencode_video_with_diff_fps(video_path, self.tmp_path, self.extraction_fps)
 
-        cap = cv2.VideoCapture(video_path)
+        if os.path.isfile(video_path):
+            cap = cv2.VideoCapture(video_path)
+        else:
+            cap = DummyVideoCap(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         # timestamp when the last frame in the stack begins (when the old frame of the last pair ends)
@@ -297,3 +300,56 @@ class ExtractI3D(torch.nn.Module):
             i3d_stream_models[stream] = i3d_stream_model
 
         return flow_xtr_model, i3d_stream_models
+
+
+def read_fps(video_frame_dir):
+    with open(os.path.join(video_frame_dir, 'fps.txt')) as fp:
+        return float(fp.read())
+
+
+def get_num_frames(video_frame_dir):
+    max_frame = -1
+    for img_file in os.listdir(video_frame_dir):
+        if img_file.endswith('.jpg'):
+            frame = int(os.path.splitext(img_file)[0])
+            max_frame = max(frame, max_frame)
+    return max_frame + 1
+
+
+IMG_NAME = '{:06d}.jpg'
+
+
+class DummyVideoCap:
+
+    def __init__(self, video_dir):
+        self._video_dir = video_dir
+        self._num_frames = get_num_frames(video_dir)
+        self._fps = read_fps(video_dir)
+        self._pos = 0
+
+        self._is_open = True
+
+    def read(self):
+        if self._pos < self._num_frames:
+            im_path = os.path.join(self._video_dir, IMG_NAME.format(self._pos))
+            im = cv2.imread(im_path)
+            self._pos += 1
+            return True, im
+        else:
+            return False, None
+
+    def get(self, k):
+        if k == cv2.CAP_PROP_FRAME_COUNT:
+            return self._num_frames
+        elif k == cv2.CAP_PROP_POS_MSEC:
+            return self._pos / self._fps * 1000
+        elif k == cv2.CAP_PROP_FPS:
+            return self._fps
+        else:
+            return 1
+
+    def isOpened(self):
+        return self._is_open
+
+    def release(self):
+        self._is_open = False
